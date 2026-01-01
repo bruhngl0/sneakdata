@@ -44,10 +44,6 @@ func (l *MemLocker) Unlock(name string) {
 	mu.Unlock()
 }
 
-func MemDB() DB {
-	return new(memDB)
-}
-
 // A memDB is an in-memory DB implementation,.
 type memDB struct {
 	MemLocker
@@ -55,8 +51,48 @@ type memDB struct {
 	data omap.Map[string, []byte]
 }
 
+func MemDB() DB {
+	return new(memDB)
+}
 func (*memDB) Close() {}
 
 func (*memDB) Panic(msg string, args ...any) {
 	Panic(msg, args...)
+}
+
+// Get returns the value associated with the key
+func (db *memDB) Get(key []byte) (val []byte, ok bool) {
+	db.mu.RLock()
+	v, ok := db.data.Get(string(key))
+	if ok {
+		v = bytes.Clone(v)
+	}
+	return v, ok
+}
+
+// Scan returns an iterator over all key-value pairs
+// in the range start ≤ key ≤ end.
+func (db *memDB) Scan(start, end []byte) iter.Seq2[[]byte, func() []byte] {
+	lo := string(start)
+	hi := string(end)
+	return func(yield func(key []byte, val func() []byte) bool) {
+		db.mu.RLock()
+		locked := true
+		defer func() {
+			if locked {
+				db.mu.RUnlock()
+			}
+		}()
+		for k, v := range db.data.Scan(lo, hi) {
+			key := []byte(k)
+			val := func() []byte { return bytes.Clone(v) }
+			db.mu.RUnlock()
+			locked = false
+			if !yield(key, val) {
+				return
+			}
+			db.mu.RLock()
+			locked = true
+		}
+	}
 }
